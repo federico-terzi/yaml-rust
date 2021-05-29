@@ -1,7 +1,7 @@
+use crate::yaml::{Hash, Yaml};
 use std::convert::From;
 use std::error::Error;
 use std::fmt::{self, Display};
-use crate::yaml::{Hash, Yaml};
 
 #[derive(Copy, Clone, Debug)]
 pub enum EmitError {
@@ -34,6 +34,7 @@ pub struct YamlEmitter<'a> {
     writer: &'a mut dyn fmt::Write,
     best_indent: usize,
     compact: bool,
+    multiline_strings: bool,
 
     level: isize,
 }
@@ -110,6 +111,7 @@ impl<'a> YamlEmitter<'a> {
             best_indent: 2,
             compact: true,
             level: -1,
+            multiline_strings: false,
         }
     }
 
@@ -128,6 +130,15 @@ impl<'a> YamlEmitter<'a> {
     /// Determine if this emitter is using 'compact inline notation'.
     pub fn is_compact(&self) -> bool {
         self.compact
+    }
+
+    pub fn multiline_strings(&mut self, multiline_strings: bool) {
+        self.multiline_strings = multiline_strings
+    }
+
+    /// Determine if this emitter will emit multiline strings when appropriate.
+    pub fn is_multiline_strings(&self) -> bool {
+        self.multiline_strings
     }
 
     pub fn dump(&mut self, doc: &Yaml) -> EmitResult {
@@ -154,11 +165,28 @@ impl<'a> YamlEmitter<'a> {
             Yaml::Array(ref v) => self.emit_array(v),
             Yaml::Hash(ref h) => self.emit_hash(h),
             Yaml::String(ref v) => {
-                if need_quotes(v) {
-                    escape_str(self.writer, v)?;
+                if self.multiline_strings && v.contains('\n') {
+                    if v.ends_with('\n') {
+                        write!(self.writer, "|")?;
+                    } else {
+                        write!(self.writer, "|-")?;
+                    }
+                    self.level += 1;
+                    for line in v.lines() {
+                        writeln!(self.writer)?;
+                        self.write_indent()?;
+                        // It's literal text, so don't escape special chars!
+                        write!(self.writer, "{}", line)?;
+                    }
+                    self.level -= 1;
                 } else {
-                    write!(self.writer, "{}", v)?;
+                    if need_quotes(v) {
+                        escape_str(self.writer, v)?;
+                    } else {
+                        write!(self.writer, "{}", v)?;
+                    }
                 }
+
                 Ok(())
             }
             Yaml::Boolean(v) => {
@@ -564,6 +592,30 @@ e:
     }
 
     #[test]
+    fn test_multiline_strings() {
+        let s = "---
+with_newline: |
+  This string is 
+  multiline
+without_newline: |-
+  This string is
+  multiline";
+
+        let docs = YamlLoader::load_from_str(&s).unwrap();
+        let doc = &docs[0];
+        let mut writer = String::new();
+        {
+            let mut emitter = YamlEmitter::new(&mut writer);
+            emitter.multiline_strings(true);
+            emitter.dump(doc).unwrap();
+        }
+        println!("original:\n{}", s);
+        println!("emitted:\n{}", writer);
+
+        assert_eq!(writer, s);
+    }
+
+    #[test]
     fn test_nested_arrays() {
         let s = r#"---
 a:
@@ -631,5 +683,4 @@ a:
 
         assert_eq!(s, writer);
     }
-
 }
