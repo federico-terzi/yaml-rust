@@ -165,7 +165,14 @@ impl<'a> YamlEmitter<'a> {
             Yaml::Array(ref v) => self.emit_array(v),
             Yaml::Hash(ref h) => self.emit_hash(h),
             Yaml::String(ref v) => {
-                if self.multiline_strings && v.contains('\n') {
+                // We need to make sure there is no line that begins with a space,
+                // otherwise we cannot use a multiline emit (because the space would
+                // interfere with the YAML indentation, making it invalid)
+                let has_space_prefix = v
+                    .lines()
+                    .any(|line| line.starts_with(' ') || line.starts_with('\t'));
+
+                if self.multiline_strings && v.contains('\n') && !has_space_prefix {
                     if v.ends_with('\n') {
                         write!(self.writer, "|")?;
                     } else {
@@ -600,6 +607,27 @@ with_newline: |
 without_newline: |-
   This string is
   multiline";
+
+        let docs = YamlLoader::load_from_str(&s).unwrap();
+        let doc = &docs[0];
+        let mut writer = String::new();
+        {
+            let mut emitter = YamlEmitter::new(&mut writer);
+            emitter.multiline_strings(true);
+            emitter.dump(doc).unwrap();
+        }
+        println!("original:\n{}", s);
+        println!("emitted:\n{}", writer);
+
+        assert_eq!(writer, s);
+    }
+
+    #[test]
+    fn test_multiline_strings_with_starting_spaces() {
+        let s = r#"---
+not_multiline: "  test  "
+multiline: "  test\ntest"
+space_on_another_line: "test\n  test""#;
 
         let docs = YamlLoader::load_from_str(&s).unwrap();
         let doc = &docs[0];
